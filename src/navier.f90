@@ -12,6 +12,7 @@ module navier
   public :: pre_correc, cor_vel
   public :: lmn_t_to_rho_trans, momentum_to_velocity, velocity_to_momentum
   public :: gradp, tbl_flrt
+  public :: extrapol_drhodt
 
 contains
   !############################################################################
@@ -247,6 +248,7 @@ contains
 
     return
   end subroutine cor_vel
+  !
   !############################################################################
   !subroutine DIVERGENCe
   !Calculation of div u* for nlock=1 and of div u^{n+1} for nlock=2
@@ -254,7 +256,7 @@ contains
   ! output : pp3 (on pressure mesh)
   !written by SL 2018
   !############################################################################
-  subroutine divergence (pp3,rho1,ux1,uy1,uz1,ep1,drho1,divu3,nlock)
+  subroutine divergence (pp3,rho1,ux1,uy1,uz1,ep1,drho1,divu3,nlock,identifier)
 
     USE param
     USE decomp_2d
@@ -277,9 +279,19 @@ contains
     real(mytype),dimension(zsize(1),zsize(2),zsize(3)),intent(in) :: divu3
     real(mytype),dimension(ph1%zst(1):ph1%zen(1),ph1%zst(2):ph1%zen(2),nzmsize) :: pp3
 
+    character(len=1),intent(in),optional :: identifier
+
     integer :: nvect3,i,j,k,nlock
     integer :: code
     real(mytype) :: tmax,tmoy,tmax1,tmoy1
+
+    character(len=1) :: iden
+
+    iden='U'
+    if(present(identifier)) then
+      iden=identifier
+    endif
+
 
     nvect3=(ph1%zen(1)-ph1%zst(1)+1)*(ph1%zen(2)-ph1%zst(2)+1)*nzmsize
 
@@ -360,9 +372,9 @@ contains
 
     if ((nrank == 0) .and. (nlock > 0).and.(mod(itime, ilist) == 0 .or. itime == ifirst .or. itime==ilast)) then
        if (nlock == 2) then
-          write(*,*) 'DIV U  max mean=',real(tmax1,mytype),real(tmoy1/real(nproc),mytype)
+          write(*,*) 'DIV ',iden,'  max mean=',real(tmax1,mytype),real(tmoy1/real(nproc),mytype)
        else
-          write(*,*) 'DIV U* max mean=',real(tmax1,mytype),real(tmoy1/real(nproc),mytype)
+          write(*,*) 'DIV ',iden,'* max mean=',real(tmax1,mytype),real(tmoy1/real(nproc),mytype)
        endif
     endif
 
@@ -614,9 +626,9 @@ contains
           enddo
           do k=1,xsize(3)
              do i=1,xsize(1)
-                ux(i,1,k)=byx1(i,k)+dpdxy1(i,k)
+                ux(i,1,k)=byx1(i,k) !+dpdxy1(i,k) ! no-slip b.c.
                 uy(i,1,k)=byy1(i,k)
-                uz(i,1,k)=byz1(i,k)+dpdzy1(i,k)
+                uz(i,1,k)=byz1(i,k) !+dpdzy1(i,k) ! no-slip b.c.
              enddo
           enddo
        endif
@@ -634,17 +646,17 @@ contains
        if (dims(1)==1) then
           do k=1,xsize(3)
              do i=1,xsize(1)
-                ux(i,xsize(2),k)=byxn(i,k)+dpdxyn(i,k)
+                ux(i,xsize(2),k)=byxn(i,k) !+dpdxyn(i,k)  ! no-slip b.c.
                 uy(i,xsize(2),k)=byyn(i,k)
-                uz(i,xsize(2),k)=byzn(i,k)+dpdzyn(i,k)
+                uz(i,xsize(2),k)=byzn(i,k) !+dpdzyn(i,k)  ! no-slip b.c.
              enddo
           enddo
        elseif (ny - (nym / dims(1)) == xstart(2)) then
           do k=1,xsize(3)
              do i=1,xsize(1)
-                ux(i,xsize(2),k)=byxn(i,k)+dpdxyn(i,k)
+                ux(i,xsize(2),k)=byxn(i,k) !+dpdxyn(i,k)  ! no-slip b.c.
                 uy(i,xsize(2),k)=byyn(i,k)
-                uz(i,xsize(2),k)=byzn(i,k)+dpdzyn(i,k)
+                uz(i,xsize(2),k)=byzn(i,k) !+dpdzyn(i,k)  ! no-slip b.c.
              enddo
           enddo
        endif
@@ -739,6 +751,8 @@ contains
     call MPI_ALLREDUCE(dep,dep1,1,real_type,MPI_MAX,MPI_COMM_WORLD,code)
     if (nrank == 0) write(*,*)'## Pres corr uz ', dep1
 #endif
+
+    ! call boundary_velocity_check(ux,uy,uz,note='after pre_correc')
 
     if (iibm==1) then !solid body old school
        call corgp_IBM(ux1,uy1,uz1,px1,py1,pz1,1)

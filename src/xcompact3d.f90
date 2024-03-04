@@ -1,3 +1,36 @@
+!################################################################################
+!This file is part of Xcompact3d.
+!
+!Xcompact3d
+!Copyright (c) 2012 Eric Lamballais and Sylvain Laizet
+!eric.lamballais@univ-poitiers.fr / sylvain.laizet@gmail.com
+!
+!    Xcompact3d is free software: you can redistribute it and/or modify
+!    it under the terms of the GNU General Public License as published by
+!    the Free Software Foundation.
+!
+!    Xcompact3d is distributed in the hope that it will be useful,
+!    but WITHOUT ANY WARRANTY; without even the implied warranty of
+!    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+!    GNU General Public License for more details.
+!
+!    You should have received a copy of the GNU General Public License
+!    along with the code.  If not, see <http://www.gnu.org/licenses/>.
+!-------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------
+!    We kindly request that you cite Xcompact3d/Incompact3d in your
+!    publications and presentations. The following citations are suggested:
+!
+!    1-Laizet S. & Lamballais E., 2009, High-order compact schemes for
+!    incompressible flows: a simple and efficient method with the quasi-spectral
+!    accuracy, J. Comp. Phys.,  vol 228 (15), pp 5989-6015
+!
+!    2-Laizet S. & Li N., 2011, Incompact3d: a powerful tool to tackle turbulence
+!    problems with up to 0(10^5) computational cores, Int. J. of Numerical
+!    Methods in Fluids, vol 67 (11), pp 1735-1757
+!################################################################################
+!    start particle tracking functionality by J Fang, 15/11/2021
+!################################################################################
 !Copyright (c) 2012-2022, Xcompact3d
 !This file is part of Xcompact3d (xcompact3d.com)
 !SPDX-License-Identifier: BSD 3-Clause
@@ -11,17 +44,25 @@ program xcompact3d
   use time_integrators, only : int_time
   use navier, only : velocity_to_momentum, momentum_to_velocity, pre_correc, &
        calc_divu_constraint, solve_poisson, cor_vel
-  use tools, only : restart, simu_stats, apply_spatial_filter, read_inflow
+  use tools, only : restart, simu_stats, apply_spatial_filter,read_inflow
   use turbine, only : compute_turbines
   use ibm_param
   use ibm, only : body
   use genepsi, only : genepsi3d
+  use partack,only : lpartack,write_particle,h5write_particle, &
+                     ipartiout,numparticle, partile_inject,numpartix,intt_particel
+  use mhd,    only : Bm,mhd_active,mhd_equation,test_magnetic, &
+                     solve_poisson_mhd,mhd_sta
 
   implicit none
 
 
   call init_xcompact3d()
 
+  ! call postprocessing(rho1,ux1,uy1,uz1,pp3,phi1,ep1)
+
+  ! call intt_particel(ux1,uy1,uz1,t0)
+  
   do itime=ifirst,ilast
      !t=itime*dt
      t=t0 + (itime0 + itime + 1 - ifirst)*dt
@@ -36,7 +77,17 @@ program xcompact3d
      if ((itype.eq.itype_abl.or.iturbine.ne.0).and.(ifilter.ne.0).and.(ilesmod.ne.0)) then
         call filter(C_filter)
         call apply_spatial_filter(ux1,uy1,uz1,phi1)
+        !
      endif
+
+     ! if(ifilter.ne.0) then
+
+     !    if(mhd_active) then
+     !      call filter(C_filter)
+     !      call apply_spatial_filter(Bm(:,:,:,1),Bm(:,:,:,2),Bm(:,:,:,3),phi1)
+     !    endif
+
+     !  endif
 
      do itr=1,iadvance_time
 
@@ -51,6 +102,7 @@ program xcompact3d
           endif
         endif
         call calculate_transeq_rhs(drho1,dux1,duy1,duz1,dphi1,rho1,ux1,uy1,uz1,ep1,phi1,divu3)
+
 #ifdef DEBG
         call check_transients()
 #endif
@@ -65,7 +117,12 @@ program xcompact3d
 
         call calc_divu_constraint(divu3,rho1,phi1)
         call solve_poisson(pp3,px1,py1,pz1,rho1,ux1,uy1,uz1,ep1,drho1,divu3)
+
         call cor_vel(ux1,uy1,uz1,px1,py1,pz1)
+
+        if(mhd_active .and. mhd_equation) then
+          call solve_poisson_mhd()
+        endif
 
         if (ilmn) then
            call momentum_to_velocity(rho1,ux1,uy1,uz1)
@@ -75,8 +132,27 @@ program xcompact3d
         
         call test_flow(rho1,ux1,uy1,uz1,phi1,ep1,drho1,divu3)
 
-     enddo !! End sub timesteps
+        if(mhd_active) call test_magnetic
 
+        if(lpartack) then
+          call intt_particel(ux1,uy1,uz1,t)
+        endif
+
+     enddo !! End sub timesteps
+     !
+     ! this only makes sense to steady flow simulation
+     ! call residual(ux1,itime,record=.true.)
+     !
+     if(lpartack .and.(mod(itime, ipartiout).eq.0) ) then
+       !
+       ! call partile_inject()
+       !
+       call h5write_particle()
+       !
+     endif
+     !
+     if(mhd_active) call mhd_sta(ux1,uy1,uz1,dux1,duy1,duz1)
+     !
      call restart(ux1,uy1,uz1,dux1,duy1,duz1,ep1,pp3(:,:,:,1),phi1,dphi1,px1,py1,pz1,rho1,drho1,mu1,1)
 
      call simu_stats(3)
@@ -124,6 +200,10 @@ subroutine init_xcompact3d()
   use ibm, only : body
 
   use probes, only : init_probes
+
+  use partack, only: lpartack,local_domain_size,init_particle
+
+  use mhd, only: mhd_active,mhd_init
 
   implicit none
 
@@ -181,7 +261,7 @@ subroutine init_xcompact3d()
   call decomp_info_init(nxm, nym, nz, ph3)
 
   call init_variables()
-
+  
   call schemes()
 
   call decomp_2d_poisson_init()
@@ -203,6 +283,12 @@ subroutine init_xcompact3d()
      if (irestart==1) then
         call restart_forces(0)
      endif
+  endif
+
+  !####################################################################
+  ! initialise mhd
+  if(mhd_active) then
+    call mhd_init()
   endif
 
   !####################################################################
@@ -243,6 +329,12 @@ subroutine init_xcompact3d()
      if (iscalar==1) call test_scalar_min_max(phi1)
   endif
 
+  if(lpartack) then
+    call local_domain_size()
+    !
+    call init_particle()
+  endif
+
   call simu_stats(1)
 
   call calc_divu_constraint(divu3, rho1, phi1)
@@ -254,6 +346,7 @@ subroutine init_xcompact3d()
   if (itype==2) then
      if(nrank.eq.0)then
         open(42,file='time_evol.dat',form='formatted')
+        write(42,'(6(1X,A20))')'time','kinetic_energy','dissipation','dissipation_2nderiv','enstrophy','omegmax'
      endif
   endif
   if (itype==5) then
@@ -262,7 +355,7 @@ subroutine init_xcompact3d()
      endif
   endif
 
-endsubroutine init_xcompact3d
+end subroutine init_xcompact3d
 !########################################################################
 !########################################################################
 subroutine finalise_xcompact3d()
@@ -275,6 +368,7 @@ subroutine finalise_xcompact3d()
   use param, only : itype, jles, ilesmod
   use probes, only : finalize_probes
   use visu, only : visu_finalise
+  use partack, only: lpartack,partcle_report
   use les, only: finalise_explicit_les
 
   implicit none
@@ -293,6 +387,9 @@ subroutine finalise_xcompact3d()
   endif
   
   call simu_stats(4)
+  !
+  if(lpartack) call partcle_report
+  !
   call finalize_probes()
   call visu_finalise()
   if (ilesmod.ne.0) then
@@ -302,7 +399,7 @@ subroutine finalise_xcompact3d()
   call decomp_2d_finalize
   CALL MPI_FINALIZE(ierr)
 
-endsubroutine finalise_xcompact3d
+end subroutine finalise_xcompact3d
 
 subroutine check_transients()
 
