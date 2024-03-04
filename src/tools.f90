@@ -210,6 +210,8 @@ contains
     use param
     use MPI
     use navier, only : gradp
+    use partack,only : lpartack,particle_file_numb
+    use mhd,    only : mhd_active,mhd_equation,Bm
 
     implicit none
 
@@ -234,6 +236,7 @@ contains
     character(len=80) :: varname
     NAMELIST /Time/ tfield, itime
     NAMELIST /NumParam/ nx, ny, nz, istret, beta, dt, itimescheme
+    NAMELIST /PartiParam/ particle_file_numb
 
     logical, save :: first_restart = .true.
     
@@ -310,6 +313,12 @@ contains
           enddo
           call decomp_2d_write_one(1,mu1(:,:,:),resfile,"mu",0,io_restart,reduce_prec=.false.)
        endif
+       !
+       if(mhd_active .and. mhd_equation) then
+        call decomp_2d_write_one(1,Bm(:,:,:,1),resfile,'bx',0,io_restart,reduce_prec=.false.)
+        call decomp_2d_write_one(1,Bm(:,:,:,2),resfile,'by',0,io_restart,reduce_prec=.false.)
+        call decomp_2d_write_one(1,Bm(:,:,:,3),resfile,'bz',0,io_restart,reduce_prec=.false.)
+       endif
 
        call decomp_2d_end_io(io_restart, resfile)
        call decomp_2d_close_io(io_restart, resfile)
@@ -348,6 +357,15 @@ contains
              write(111,'(A,I14)') 'itimescheme=',itimescheme
              write(111,fmt2) 'iimplicit=',iimplicit
              write(111,'(A)')'/End'
+
+             if(lpartack) then
+               write(111,'(A)')'!========================='
+               write(111,'(A)')'&PartiParam'
+               write(111,'(A)')'!========================='
+               write(111,fmt2) 'particle_file_numb=   ',particle_file_numb
+               write(111,'(A)')'/End'
+             endif
+
              write(111,'(A)')'!========================='
 
              close(111)
@@ -423,6 +441,12 @@ contains
           call decomp_2d_read_one(1,mu1,resfile,"mu",io_restart,reduce_prec=.false.)
        end if
 
+       if(mhd_active .and. mhd_equation) then
+        call decomp_2d_read_one(1,Bm(:,:,:,1),resfile,'bx',io_restart,reduce_prec=.false.)
+        call decomp_2d_read_one(1,Bm(:,:,:,2),resfile,'by',io_restart,reduce_prec=.false.)
+        call decomp_2d_read_one(1,Bm(:,:,:,3),resfile,'bz',io_restart,reduce_prec=.false.)
+       endif
+       !
        call decomp_2d_end_io(io_restart, resfile)
        call decomp_2d_close_io(io_restart, resfile)
 
@@ -434,6 +458,7 @@ contains
        if (fexists) then
          open(111, file=filename)
          read(111, nml=Time)
+         ! if(lpartack) read(111, nml=PartiParam)
          close(111)
          t0 = tfield
          itime0 = 0
@@ -577,7 +602,7 @@ contains
     call transpose_x_to_y(uzf1,uz2)
     !if (iscalar == 1) call transpose_x_to_y(phif1,phi2)
 
-    if (ifilter==1.or.ifilter==3) then ! all filter or y filter
+    if (ifilter==1.or.ifilter==2) then ! all filter or y filter
       call fily(uxf2,ux2,di2,fisy,fiffyp,fifsyp,fifwyp,ysize(1),ysize(2),ysize(3),1,ubcx)
       call fily(uyf2,uy2,di2,fisy,fiffy,fifsy,fifwy,ysize(1),ysize(2),ysize(3),0,ubcy)
       call fily(uzf2,uz2,di2,fisy,fiffyp,fifsyp,fifwyp,ysize(1),ysize(2),ysize(3),1,ubcz)
@@ -594,7 +619,7 @@ contains
     call transpose_y_to_z(uzf2,uz3)
     !if (iscalar == 1) call transpose_y_to_z(phif2,phi3)
 
-    if (ifilter==1.or.ifilter==2) then
+    if (ifilter==1.or.ifilter==3) then
       call filz(uxf3,ux3,di3,fisz,fiffzp,fifszp,fifwzp,zsize(1),zsize(2),zsize(3),1,ubcx)
       call filz(uyf3,uy3,di3,fisz,fiffzp,fifszp,fifwzp,zsize(1),zsize(2),zsize(3),1,ubcy)
       call filz(uzf3,uz3,di3,fisz,fiffz,fifsz,fifwz,zsize(1),zsize(2),zsize(3),0,ubcz)
@@ -755,6 +780,7 @@ contains
      use param, only : cfl_diff_sum, cfl_diff_x, cfl_diff_y, cfl_diff_z
      use variables, only : dyp
      use decomp_2d, only : nrank
+     use mhd, only: mhd_active, mhd_equation,rem
 
      implicit none
 
@@ -779,6 +805,29 @@ contains
         write(*,*) '==========================================================='
      endif
 
+     if( mhd_active.and.mhd_equation) then
+ 
+        cfl_diff_x = dt/ (dx**2) / rem
+        cfl_diff_z = dt/ (dz**2) / rem
+   
+        if (istret == 0) then
+           cfl_diff_y = dt / (dy**2) / rem
+        else
+           cfl_diff_y = dt / (minval(dyp)**2) / rem
+        end if
+   
+        cfl_diff_sum = cfl_diff_x + cfl_diff_y + cfl_diff_z
+   
+        if (nrank==0) then
+           write(*,*) '==========================================================='
+           write(*,*) 'Magnetic Diffusion number'
+           write(*,"(' B cfl_diff_x             :        ',F13.8)") cfl_diff_x
+           write(*,"(' B cfl_diff_y             :        ',F13.8)") cfl_diff_y
+           write(*,"(' B cfl_diff_z             :        ',F13.8)") cfl_diff_z
+           write(*,"(' B cfl_diff_sum           :        ',F13.8)") cfl_diff_sum
+           write(*,*) '==========================================================='
+        endif
+     endif    
      return
   end subroutine compute_cfldiff
   !##################################################################
@@ -966,6 +1015,107 @@ contains
     end if
     
   end subroutine rename
+
+  !+-------------------------------------------------------------------+
+  !| this subroutine is used to calculated the residual of velocity    |
+  !+-------------------------------------------------------------------+
+  !| change record                                                     |
+  !| -------------                                                     |
+  !| 15-Nov-2022  | Created by J. Fang STFC Daresbury Laboratory       |
+  !+-------------------------------------------------------------------+
+  subroutine residual(ux,itime,record)
+    !
+    use decomp_2d, only : mytype,real_type,nrank
+    use variables, only : ilist
+    use param, only : ifirst,ilast
+    use mpi
+    !
+    real(mytype),intent(in) :: ux(:,:,:)
+    integer, intent(in) :: itime
+    logical,intent(in),optional :: record
+    !
+    real(mytype),allocatable,save :: uxsave(:,:,:)
+    !
+    real(mytype) :: resid_ux,resid_uxout
+    integer :: i,j,k,code,ns,ferr
+    logical :: lrec,lexist
+    logical,save :: firstcall=.true.
+    integer,save :: fhand
+    !
+    if(present(record)) then
+      lrec=record
+    else
+      lrec=.false.
+    endif
+    !
+    if(firstcall) then
+      !
+      if (nrank == 0) then
+        !
+        if(lrec) then
+          !
+          inquire(file="residual.dat",exist=lexist)
+          open(newunit=fhand,file="residual.dat",action='write')
+          !
+          if(itime==1 .or. (.not. lexist)) then
+            continue
+          else
+            ns=0
+            do while(ns<itime)
+              read(fhand,*,iostat=ferr)ns
+              !
+              if(ferr<0) then
+                print*,' ** itime=',ns,itime
+                print*,' ** end of flowstate.dat is reached.'
+                !
+                exit
+                !
+              endif
+              !
+            enddo
+            !
+          endif
+          !
+        endif
+        !
+      endif
+      !
+      firstcall=.false.
+      !
+    endif
+    !
+    if(.not. allocated(uxsave)) allocate(uxsave(size(ux,1),size(ux,2),size(ux,3)))
+    !
+    uxsave=abs(uxsave-ux)
+    !
+    resid_ux=maxval(uxsave)
+    !
+    call mpi_reduce(resid_ux,resid_uxout,1,real_type,mpi_max,0,mpi_comm_world,code)
+    !
+    if (nrank == 0) then
+      !
+      if ((mod(itime,ilist)==0 .or. itime == ifirst .or. itime == ilast)) then
+        write(*,*) 'U residual=',resid_uxout
+      endif
+      !
+      if(lrec) then
+        write(fhand,*)itime,resid_uxout
+        !
+        if(itime == ilast) then
+          close(fhand)
+        endif
+        !
+      endif
+      !
+      !
+    endif
+    !
+    uxsave=ux
+    !
+  end subroutine residual
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine residual.                               |
+  !+-------------------------------------------------------------------+
 
   ! Subroutine to delete a file/director
   !

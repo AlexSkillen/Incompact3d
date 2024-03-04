@@ -27,6 +27,7 @@ contains
     use variables
     use param
     use MPI
+    use mhd, only: mhd_active,Bm,Bmean,test_magnetic
     use dbg_schemes, only: sin_prec, cos_prec
 
     implicit none
@@ -68,14 +69,42 @@ contains
 
                 ux1(i,j,k)=+sin_prec(x)*cos_prec(y)*cos_prec(z)
                 uy1(i,j,k)=-cos_prec(x)*sin_prec(y)*cos_prec(z)
-                if (iscalar == 1) then
-                   phi1(i,j,k,1:numscalar)=sin_prec(x)*sin_prec(y)*cos_prec(z)
+                ! if (iscalar == 1) then
+                !    phi1(i,j,k,1:numscalar)=sin_prec(x)*sin_prec(y)*cos_prec(z)
+                ! endif
+
+                ! ux1(i,j,k)= -2.d0*sin_prec(y)*cos_prec(z)
+                ! uy1(i,j,k)=  2.d0*sin_prec(x)*cos_prec(z)
+
+                uz1(i,j,k)=  zero
+                !
+                if(mhd_active) then
+                  ! Bm(i,j,k,1)=-2.d0*sin_prec(y)
+                  ! Bm(i,j,k,2)= 2.d0*sin_prec(2.d0*x)
+                  ! Bm(i,j,k,3)=zero
+
+                  ! Bm(i,j,k,1)=0.8d0*(-2.d0*sin_prec(2.d0*y) + sin_prec(z))
+                  ! Bm(i,j,k,2)=0.8d0*( 2.d0*sin_prec(x)      + sin_prec(z))
+                  ! Bm(i,j,k,3)=0.8d0*(      sin_prec(x)      + sin_prec(y))
+                  !
+                  ! Bm(i,j,k,1)=-2.d0*sin_prec(2.d0*y) + sin_prec(z)
+                  ! Bm(i,j,k,2)= 2.d0*sin_prec(x)      + sin_prec(z)
+                  ! Bm(i,j,k,3)=      sin_prec(x)      + sin_prec(y)
+                  !
+                  Bm(i,j,k,1)=sin_prec(x)*sin_prec(y)*cos_prec(z)
+                  Bm(i,j,k,2)=cos_prec(x)*cos_prec(y)*cos_prec(z)
+                  Bm(i,j,k,3)=zero
+                  !
+                  Bmean(i,j,k,1)=zero
+                  Bmean(i,j,k,2)=zero
+                  Bmean(i,j,k,3)=zero
+
                 endif
-                uz1(i,j,k)=zero
+                !
              enddo
           enddo
        enddo
-
+       !
        call random_seed(size=isize)
        allocate (seed(isize))
        seed(:)=67
@@ -124,6 +153,8 @@ contains
           enddo
        enddo
     enddo
+
+    ! if(mhd_active) call test_magnetic
 
 #ifdef DEBG
     if (nrank  ==  0) write(*,*) '# init end ok'
@@ -228,9 +259,9 @@ contains
     real(mytype),intent(in),dimension(xsize(1),xsize(2),xsize(3)) :: ux1, uy1, uz1,ep1
     real(mytype),intent(in),dimension(xsize(1),xsize(2),xsize(3),numscalar) :: phi1
     real(mytype) :: mp(numscalar),mps(numscalar),vl,es,es1,ek,ek1,ds,ds1
-    real(mytype) :: temp1, temp2, temp3, temp4, temp5, temp6, temp7, temp8, temp9
+    real(mytype) :: temp0, temp1, temp2, temp3, temp4, temp5, temp6, temp7, temp8, temp9
 
-    real(mytype) :: eek, enst, eps, eps2
+    real(mytype) :: eek, enst, eps, eps2, enmx
     integer :: nxc, nyc, nzc, xsize1, xsize2, xsize3
 
     integer :: i,j,k,is,code,nvect1
@@ -311,17 +342,21 @@ contains
 
        !SPATIALLY-AVERAGED ENSTROPHY
        temp1=zero
+       temp2=zero
        do k=1,xsize3
           do j=1,xsize2
              do i=1,xsize1
-                temp1=temp1+zpfive*((tf1(i,j,k)-th1(i,j,k))**2+&
-                                    (tg1(i,j,k)-tc1(i,j,k))**2+&
-                                    (tb1(i,j,k)-td1(i,j,k))**2)
+                temp0=zpfive*((tf1(i,j,k)-th1(i,j,k))**2+&
+                              (tg1(i,j,k)-tc1(i,j,k))**2+&
+                              (tb1(i,j,k)-td1(i,j,k))**2)
+                temp1=temp1+temp0
+                temp2=max(temp2,temp0)
              enddo
           enddo
        enddo
        call MPI_ALLREDUCE(temp1,enst,1,real_type,MPI_SUM,MPI_COMM_WORLD,code)
        enst=enst/(nxc*nyc*nzc)
+       call MPI_ALLREDUCE(temp2,enmx,1,real_type,MPI_MAX,MPI_COMM_WORLD,code)
        
        !SPATIALLY-AVERAGED ENERGY DISSIPATION
        temp1=zero
@@ -397,7 +432,7 @@ contains
        
        
        if (nrank==0) then
-          write(42,'(20e20.12)') (itime-1)*dt,eek,eps,eps2,enst
+          write(42,'(6(1X,E20.13E2))') (itime-1)*dt,eek,eps,eps2,enst,enmx
           call flush(42)
        endif
     endif
@@ -441,6 +476,7 @@ contains
     USE var, only : ta2,tb2,tc2,td2,te2,tf2,di2,ta3,tb3,tc3,td3,te3,tf3,di3
     use var, ONLY : nxmsize, nymsize, nzmsize
     use visu, only : write_field
+    use mhd, only : mhd_active,Bm
     use ibm_param, only : ubcx,ubcy,ubcz
 
     implicit none
@@ -503,6 +539,12 @@ contains
                   - tg1(:,:,:)*tc1(:,:,:) &
                   - th1(:,:,:)*tf1(:,:,:)
     call write_field(di1, ".", "critq", num, flush=.true.) ! Reusing temporary array, force flush
+    
+    if(mhd_active) then
+      call write_field(Bm(:,:,:,1), ".", "B_x", num, flush = .true.)
+      call write_field(Bm(:,:,:,2), ".", "B_y", num, flush = .true.)
+      call write_field(Bm(:,:,:,3), ".", "B_z", num, flush = .true.)
+    endif
 
   end subroutine visu_tgv
   !############################################################################
